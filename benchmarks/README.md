@@ -214,6 +214,17 @@ quadratic model towards 1 — which would *flatter* the attention baselines.
 Measuring the body alone (the sequence-mixing stack, with no LM head) gives
 the exponent the O(N) claim is actually about. Both numbers are reported.
 
+**Architecture, not weights.** The attention baselines (GPT-2, Pythia) are
+built from config with random weights and a position table widened to cover
+the sweep. A scaling study measures the architecture; loading a pretrained
+checkpoint would instead measure the *training context* its learned absolute
+position embeddings were sized for (2048 for Pythia), capping the sweep for
+a reason unrelated to complexity. HSKM and Mamba are
+position-independent by construction. Note that GPT-2-style absolute
+positions *are* a genuine handicap at long context — which is exactly why
+the field moved to RoPE, and one more reason HSKM's RoPE-in-kernel-attention
+design is interesting.
+
 We also measure **generation throughput versus context length**, which
 separates the asymptotic claim from the practical one (see §5).
 

@@ -26,6 +26,14 @@ Methodological notes
   verified in ``tests/test_numerics.py``.
 * **Fair dtype.** Every model runs in the same dtype so the timings are
   comparable.
+* **Architecture, not weights.** Attention models (GPT-2, Pythia) are built
+  from config with random weights and a position table widened to cover the
+  sweep: a scaling study measures the architecture, and learned absolute
+  position embeddings sized to a 2048-token training context would
+  otherwise cap the sweep for a reason unrelated to complexity. HSKM and
+  Mamba are recurrent/position-independent by construction. (GPT-2-style
+  absolute positions *are* a genuine handicap at long context — which is
+  exactly why the field moved to RoPE.)
 * OOM is recorded rather than crashing the sweep.
 
 Examples
@@ -92,10 +100,14 @@ def build_for_scaling(key: str, args, device, dtype):
     if key == "gpt2":
         from transformers import GPT2Config, GPT2LMHeadModel
 
+        # Random weights: a scaling study measures the architecture.
+        # GPT-2 uses learned absolute position embeddings, widened to cover
+        # the sweep (see the note on pythia-160m below).
         cfg = GPT2Config(
             vocab_size=50257, n_positions=max(args.seq_lens) + 8,
             n_embd=args.d_model, n_layer=args.n_layers, n_head=args.n_heads,
         )
+        torch.manual_seed(0)
         return GPT2LMHeadModel(cfg).to(device).to(dtype), "hf"
 
     if key == "gpt2-ctrl":
@@ -107,15 +119,24 @@ def build_for_scaling(key: str, args, device, dtype):
             vocab_size=50259, n_positions=max(args.seq_lens) + 8,
             n_embd=args.d_model, n_layer=n_layer, n_head=args.n_heads,
         )
+        torch.manual_seed(0)
         return GPT2LMHeadModel(cfg).to(device).to(dtype), "hf"
 
     if key == "pythia-160m":
-        from transformers import AutoModelForCausalLM
+        # Built from config (random weights) rather than from the checkpoint:
+        # Pythia uses *learned absolute* position embeddings sized to its
+        # training context (2048), which would cap the sweep at 2048 tokens
+        # for a reason that has nothing to do with the architecture's
+        # complexity. A scaling study measures the architecture, so we widen
+        # the position table and note that GPT-2-style absolute positions are
+        # a genuine handicap at long context -- which is precisely why the
+        # field moved to RoPE.
+        from transformers import AutoConfig, AutoModelForCausalLM
 
-        m = AutoModelForCausalLM.from_pretrained(
-            "EleutherAI/pythia-160m", torch_dtype=dtype
-        )
-        return m.to(device), "hf"
+        cfg = AutoConfig.from_pretrained("EleutherAI/pythia-160m")
+        cfg.max_position_embeddings = max(args.seq_lens) + 8
+        torch.manual_seed(0)
+        return AutoModelForCausalLM.from_config(cfg).to(device).to(dtype), "hf"
 
     if key == "mamba-130m":
         from model_registry import load_model
