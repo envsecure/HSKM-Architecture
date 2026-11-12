@@ -186,6 +186,18 @@ length (`--context`, default 512) so the comparison isolates the model rather
 than its context window. `--native-context` switches to each model's own
 maximum instead.
 
+**A note on the Mamba baselines' absolute speed.** `mamba_ssm` and
+`causal_conv1d` (the fused CUDA kernels) are not installable as prebuilt
+wheels for this PyTorch/CUDA combination, so the Mamba models run on
+`transformers`' reference PyTorch path. This makes their *absolute* timings
+and throughput pessimistic — the fused kernels are considerably faster. Two
+things to note:
+
+* The measured **scaling exponent**, which is what this benchmark is about,
+  is unaffected: both implementations have the same asymptotic complexity.
+* The error direction is conservative. If anything, Mamba's numbers here
+  *understate* it, so the comparison does not overstate HSKM's advantage.
+
 ### 3.2 Quality — standard downstream tasks
 
 Run with **lm-evaluation-harness 0.4.13**, 0-shot, identical task versions and
