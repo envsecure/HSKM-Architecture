@@ -3,110 +3,44 @@
     "key": "gpt2",
     "corpus": "wikitext103",
     "context": 512,
-    "token_ppl": 35.703434307284994,
-    "word_ppl": 64.05937771021091,
-    "nll": 889725.2136230469,
-    "n_tokens": 248857,
-    "n_words": 213886,
-    "elapsed_s": 7.3150317668914795
+    "token_ppl": 33.374610611203245,
+    "word_ppl": 51.597005838031365,
+    "nll": 157738.5457763672,
+    "n_tokens": 44968,
+    "n_words": 40000,
+    "elapsed_s": 2.1132075786590576
   },
   "opt-125m/wikitext103": {
     "key": "opt-125m",
     "corpus": "wikitext103",
     "context": 512,
-    "token_ppl": 39.78421118276343,
-    "word_ppl": 72.65545697881254,
-    "nll": 916657.3260498047,
-    "n_tokens": 248857,
-    "n_words": 213886,
-    "elapsed_s": 6.402303457260132
-  },
-  "pythia-160m/wikitext103": {
-    "key": "pythia-160m",
-    "corpus": "wikitext103",
-    "context": 512,
-    "token_ppl": 37.31317840102037,
-    "word_ppl": 71.02294110306904,
-    "nll": 911796.6466064453,
-    "n_tokens": 251923,
-    "n_words": 213886,
-    "elapsed_s": 6.713416576385498
-  },
-  "smollm2-135m/wikitext103": {
-    "key": "smollm2-135m",
-    "corpus": "wikitext103",
-    "context": 512,
-    "token_ppl": 21.19135498704982,
-    "word_ppl": 45.399437949496914,
-    "nll": 816081.9741821289,
-    "n_tokens": 267253,
-    "n_words": 213886,
-    "elapsed_s": 24.144556283950806
-  },
-  "mamba-130m/wikitext103": {
-    "key": "mamba-130m",
-    "corpus": "wikitext103",
-    "context": 512,
-    "token_ppl": 27.582785417514927,
-    "word_ppl": 49.75513731208042,
-    "nll": 835676.9252929688,
-    "n_tokens": 251923,
-    "n_words": 213886,
-    "elapsed_s": 442.57971954345703
-  },
-  "mamba2-130m/wikitext103": {
-    "key": "mamba2-130m",
-    "corpus": "wikitext103",
-    "context": 512,
-    "token_ppl": 27.142316354332273,
-    "word_ppl": 48.82063399921158,
-    "nll": 831621.5035400391,
-    "n_tokens": 251923,
-    "n_words": 213886,
-    "elapsed_s": 50.256816148757935
-  },
-  "pythia-410m/wikitext103": {
-    "key": "pythia-410m",
-    "corpus": "wikitext103",
-    "context": 512,
-    "token_ppl": 22.175382427170735,
-    "word_ppl": 38.4784685083047,
-    "nll": 780705.0373535156,
-    "n_tokens": 251923,
-    "n_words": 213886,
-    "elapsed_s": 13.897863149642944
-  },
-  "smollm2-360m/wikitext103": {
-    "key": "smollm2-360m",
-    "corpus": "wikitext103",
-    "context": 512,
-    "token_ppl": 15.779013328901963,
-    "word_ppl": 31.406131754458304,
-    "nll": 737265.7163085938,
-    "n_tokens": 267253,
-    "n_words": 213886,
-    "elapsed_s": 34.54240036010742
+    "token_ppl": 33.17319995654295,
+    "word_ppl": 51.24708384531058,
+    "nll": 157466.3486328125,
+    "n_tokens": 44968,
+    "n_words": 40000,
+    "elapsed_s": 1.192080020904541
   },
   "opt-350m/wikitext103": {
     "key": "opt-350m",
     "corpus": "wikitext103",
     "context": 512,
-    "token_ppl": 31.94337675920299,
-    "word_ppl": 56.27967527799688,
-    "nll": 862031.9029541016,
-    "n_tokens": 248857,
-    "n_words": 213886,
-    "elapsed_s": 12.161277055740356
+    "token_ppl": 26.347917841344568,
+    "word_ppl": 39.555145928795504,
+    "nll": 147107.8319091797,
+    "n_tokens": 44968,
+    "n_words": 40000,
+    "elapsed_s": 2.0577688217163086
   },
-  "qwen2.5-0.5b/wikitext103": {
-    "key": "qwen2.5-0.5b",
+  "pythia-160m/wikitext103": {
+    "key": "pythia-160m",
     "corpus": "wikitext103",
     "context": 512,
-    "token_ppl": 17.777643769030767,
-    "word_ppl": 33.79752910294112,
-    "nll": 752961.6428222656,
-    "n_tokens": 261632,
-    "n_words": 213886,
-    "elapsed_s": 32.89277458190918
+    "token_ppl": 34.7063094974658,
+    "word_ppl": 59.0316059768267,
+    "nll": 163122.9197998047,
+    "n_tokens": 45990,
+    "n_words": 40000,
+    "elapsed_s": 1.3832616806030273
   }
 }

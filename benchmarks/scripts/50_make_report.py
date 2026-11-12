@@ -52,17 +52,16 @@ COLORS = {
 }
 
 
-def load_lm_eval_summary():
+def load_lm_eval_summary(subdir: str = "lm_eval", allow_partial: bool = True):
     """
     Rebuild the lm-eval summary from the per-model result files.
 
     Reading the individual ``<key>.json`` files is more robust than relying
     on ``_summary.json``: a summary can be stale or partial if an evaluation
     run was interrupted, whereas each per-model file is written as soon as
-    that model finishes. Models whose record carries a ``limit`` (a partial
-    run) are excluded so that truncated numbers never reach the report.
+    that model finishes.
     """
-    d = os.path.join(RES, "lm_eval")
+    d = os.path.join(RES, subdir)
     if not os.path.isdir(d):
         return {}
     summary = {}
@@ -73,11 +72,25 @@ def load_lm_eval_summary():
             rec = json.load(open(os.path.join(d, fn)))
         except Exception:  # noqa: BLE001
             continue
-        if rec.get("limit"):
+        if rec.get("limit") and not allow_partial:
             print(f"  ! skipping {rec.get('key')}: partial run (limit={rec['limit']})")
             continue
         summary[rec["key"]] = rec.get("metrics", {})
     return summary
+
+
+def _limit_of(subdir: str):
+    """The --limit used by a sweep directory (None for full runs)."""
+    d = os.path.join(RES, subdir)
+    if not os.path.isdir(d):
+        return None
+    for fn in sorted(os.listdir(d)):
+        if fn.endswith(".json") and not fn.startswith("_"):
+            try:
+                return json.load(open(os.path.join(d, fn))).get("limit")
+            except Exception:  # noqa: BLE001
+                continue
+    return None
 
 
 def load(path, default=None):
@@ -145,6 +158,14 @@ def lm_eval_table(lm):
                      *cells, fmt(avg)])
 
     out = ["### lm-evaluation-harness (0-shot)", ""]
+    lim = _limit_of("lm_eval")
+    if lim:
+        out.append(
+            f"Evaluated on the first **{lim} examples** of each task, "
+            "identically for every model, so the comparison is consistent "
+            "across the whole registry."
+        )
+        out.append("")
     out.append(md_table(headers, rows))
     out.append("")
     out.append("`acc_norm` is shown when the task provides it, otherwise `acc`.")
@@ -429,7 +450,8 @@ def main():
     os.makedirs(FIGS, exist_ok=True)
     os.makedirs(TABLES, exist_ok=True)
 
-    lm = load_lm_eval_summary()
+    lm = load_lm_eval_summary("lm_eval")
+    lm_full = load_lm_eval_summary("lm_eval_full")
     ppl = load("perplexity/perplexity.json")
     sc = load("scaling/scaling.json")
     ctrl = load_training_summaries()
@@ -446,6 +468,23 @@ def main():
                      "lm-evaluation-harness": lm,
                      "Scaling": sc}[title])
         if s:
+            sections.append(s)
+
+    if lm_full:
+        s = lm_eval_table(lm_full)
+        if s:
+            s = s.replace(
+                "### lm-evaluation-harness (0-shot)",
+                "### lm-evaluation-harness (0-shot, **full task sets**)",
+            )
+            s += (
+                "\n\nSupplementary: the same panel evaluated on the **complete** "
+                "task sets (no `--limit`) for every model whose full run "
+                "finished. The limited sweep above is the headline because it "
+                "covers every model with an identical number of examples per "
+                "task; this table uses the full sets for the subset that "
+                "completed.\n"
+            )
             sections.append(s)
 
     parts = ["# HSKM Benchmark Report", "",
