@@ -39,17 +39,21 @@ echo "=============================================================="
 
 # ---------------------------------------------------------------- 0. tests
 echo ""
-echo ">>> [0/6] Verifying the harness itself (unit tests)"
+echo ">>> [0/7] Verifying the harness itself (unit tests)"
 python3 -m pytest benchmarks/tests -q
 
 # ------------------------------------------------------------- 1. downloads
 echo ""
-echo ">>> [1/6] Downloading model checkpoints"
+echo ">>> [1/7] Downloading model checkpoints"
 python3 benchmarks/scripts/01_download_models.py
+
+echo ""
+echo ">>> [1b/7] Recording model configuration details"
+python3 benchmarks/scripts/05_dump_configs.py
 
 # ------------------------------------------------------------- 2. training
 echo ""
-echo ">>> [2/6] Controlled from-scratch training (HSKM vs GPT-2)"
+echo ">>> [2/7] Controlled from-scratch training (HSKM vs GPT-2)"
 # The two models can be trained concurrently on separate GPUs. They are
 # independent runs with an identical budget, so this is safe and roughly
 # halves the wall-clock time:
@@ -64,22 +68,22 @@ python3 benchmarks/scripts/10_train_controlled.py --model both --tokens "${TOKEN
 
 # ------------------------------------------------------------ 3. lm-eval
 echo ""
-echo ">>> [3/6] lm-evaluation-harness"
+echo ">>> [3/7] lm-evaluation-harness"
 python3 benchmarks/scripts/20_run_lm_eval.py --models "${EVAL_MODELS},hskm-ours,gpt2-ours" ${LIMIT}
 
 # ------------------------------------------------------------ 4. perplexity
 echo ""
-echo ">>> [4/6] Perplexity"
+echo ">>> [4/7] Perplexity"
 python3 benchmarks/scripts/30_perplexity.py --models all --context 512
 
 # -------------------------------------------------------------- 5. scaling
 echo ""
-echo ">>> [5/6] Scaling benchmark (O(N) vs O(N^2))"
+echo ">>> [5/7] Scaling benchmark (O(N) vs O(N^2))"
 python3 benchmarks/scripts/40_scaling_benchmark.py --models "${SCALING_MODELS}" --seq-lens "${SEQ_LENS}"
 
 # --------------------------------------------------------------- 6. report
 echo ""
-echo ">>> [6/6] Building tables and figures"
+echo ">>> [6/7] Building tables and figures"
 python3 benchmarks/scripts/50_make_report.py
 
 echo ""

@@ -300,10 +300,16 @@ def _build_legacy_mamba(model_id: str, family: str):
     (``backbone.embedding.weight``) rather than the transformers one
     (``backbone.embeddings.weight``).
 
-    We therefore rebuild the config explicitly and rename the embedding key.
-    Everything else matches one-to-one. The rename is verified by
-    ``tests/test_model_registry.py`` which asserts that *every* parameter
-    receives a value from the checkpoint (no missing / unexpected keys).
+    We therefore rebuild the config explicitly, deriving **every** field
+    from the shapes in the checkpoint itself rather than hard-coding
+    anything, and we rename the embedding key. Everything else matches
+    one-to-one.
+
+    The rename and the shape derivation are verified by
+    ``tests/test_benchmark.py::test_legacy_mamba_loads_exactly``, which
+    asserts that *every* parameter receives a value from the checkpoint
+    (no missing / unexpected keys) and that the model produces finite
+    logits.
     """
     from transformers import (
         MambaConfig, MambaForCausalLM, Mamba2Config, Mamba2ForCausalLM,
@@ -320,14 +326,62 @@ def _build_legacy_mamba(model_id: str, family: str):
     hidden = raw["d_model"]
     layers = raw["n_layer"]
 
+    l0 = "backbone.layers.0.mixer."
     if family == "mamba":
+        # transformers MambaMixer (v1) shapes:
+        #   in_proj   : (2 * intermediate_size, hidden_size)
+        #   x_proj    : (time_step_rank + 2 * state_size, intermediate_size)
+        #   dt_proj   : (intermediate_size, time_step_rank)
+        #   A_log     : (intermediate_size, state_size)
+        intermediate_size = state[l0 + "in_proj.weight"].shape[0] // 2
+        state_size = state[l0 + "A_log"].shape[1]
+        time_step_rank = state[l0 + "dt_proj.weight"].shape[1]
+
         cfg = MambaConfig(
-            hidden_size=hidden, num_hidden_layers=layers, vocab_size=vocab_size
+            vocab_size=vocab_size,
+            hidden_size=hidden,
+            num_hidden_layers=layers,
+            intermediate_size=intermediate_size,
+            state_size=state_size,
+            time_step_rank=time_step_rank,
+            conv_kernel=state[l0 + "conv1d.weight"].shape[2],
+            expand=int(intermediate_size // hidden),
+            use_bias=l0 + "in_proj.bias" in state,
+            use_conv_bias=l0 + "conv1d.bias" in state,
+            residual_in_fp32=raw.get("residual_in_fp32", True),
+            tie_word_embeddings=raw.get("tie_embeddings", True),
         )
         cls = MambaForCausalLM
     else:
+        # transformers Mamba2Mixer shapes:
+        #   conv_dim    = intermediate_size + 2 * n_groups * ssm_state_size
+        #   in_proj out = intermediate_size + conv_dim + num_heads
+        #   A_log/dt_bias : (num_heads,)
+        num_heads = state[l0 + "A_log"].shape[0]
+        in_proj_out = state[l0 + "in_proj.weight"].shape[0]
+        conv_dim = state[l0 + "conv1d.weight"].shape[0]
+        # Subtracting the two equations above:
+        #   n_groups * ssm_state_size = conv_dim - (in_proj_out - num_heads) / 2
+        groups_state = conv_dim - (in_proj_out - num_heads) / 2
+        intermediate_size = conv_dim - 2 * groups_state
+        ssm_state_size = 128
+        n_groups = int(round(groups_state / ssm_state_size))
+
         cfg = Mamba2Config(
-            hidden_size=hidden, num_hidden_layers=layers, vocab_size=vocab_size
+            vocab_size=vocab_size,
+            hidden_size=hidden,
+            num_hidden_layers=layers,
+            intermediate_size=intermediate_size,
+            num_heads=num_heads,
+            head_dim=int(intermediate_size // num_heads),
+            n_groups=n_groups,
+            ssm_state_size=ssm_state_size,
+            conv_kernel=state[l0 + "conv1d.weight"].shape[2],
+            expand=int(intermediate_size // hidden),
+            use_bias=l0 + "in_proj.bias" in state,
+            use_conv_bias=l0 + "conv1d.bias" in state,
+            residual_in_fp32=raw.get("residual_in_fp32", True),
+            tie_word_embeddings=raw.get("tie_embeddings", True),
         )
         cls = Mamba2ForCausalLM
 

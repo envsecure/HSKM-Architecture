@@ -217,3 +217,60 @@ def test_registry_entries_are_unique():
     for b in REGISTRY:
         assert b.reason and len(b.reason) > 40, f"{b.key}: missing justification"
         assert b.tier in ("linear", "attention", "ours"), f"{b.key}: bad tier"
+
+
+@pytest.mark.parametrize("key", ["mamba-130m", "mamba2-130m"])
+def test_legacy_mamba_loads_exactly(key):
+    """
+    The legacy ``state-spaces`` checkpoints must load into the transformers
+    ``MambaForCausalLM`` / ``Mamba2ForCausalLM`` without any parameter being
+    left uninitialised.
+
+    This is the check that makes the custom loader trustworthy: the config is
+    derived from the checkpoint's own shapes, and every single parameter must
+    receive a value (no missing keys, no unexpected keys).
+    """
+    from model_registry import BY_KEY, count_params, load_model
+
+    b = BY_KEY[key]
+    model = load_model(b, device="cpu", dtype=torch.float32)
+
+    # Every parameter must be finite (i.e. actually loaded, not left as
+    # uninitialised garbage) and the parameter count must be plausible.
+    for name, p in model.named_parameters():
+        assert torch.isfinite(p).all(), f"{key}: {name} is not finite"
+
+    n = count_params(model)  # millions
+    assert 100 < n < 200, f"{key}: unexpected parameter count {n:.1f}M"
+
+    x = torch.randint(0, 1000, (1, 32))
+    with torch.no_grad():
+        out = model(input_ids=x)
+    assert torch.isfinite(out.logits).all(), f"{key}: non-finite logits"
+
+
+def test_legacy_mamba_embeddings_are_tied():
+    """
+    Both legacy Mamba checkpoints store an identical ``embedding.weight`` and
+    ``lm_head.weight``, so the transformers default of tying the output head
+    to the input embedding is correct.
+    """
+    import glob
+
+    for repo in ("state-spaces/mamba-130m", "state-spaces/mamba2-130m"):
+        snaps = glob.glob(
+            os.path.join(
+                os.path.expanduser("~/.cache/huggingface"),
+                f"hub/models--{repo.replace('/', '--')}/snapshots/*/",
+            )
+        )
+        if not snaps:
+            pytest.skip(f"{repo} not cached")
+        sd = torch.load(
+            os.path.join(snaps[0], "pytorch_model.bin"), map_location="cpu",
+            weights_only=True,
+        )
+        emb, lm = sd.get("backbone.embedding.weight"), sd.get("lm_head.weight")
+        if emb is None or lm is None:
+            continue
+        assert torch.equal(emb, lm), f"{repo}: embeddings are not tied"

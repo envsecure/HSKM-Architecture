@@ -198,13 +198,21 @@ This is the experiment the project actually needs, so it is run carefully.
 
 For each model and each sequence length we measure:
 
-* forward+backward wall-clock time per step,
+* forward+backward wall-clock time per step (the **full step**),
+* forward time for the **body only** (excluding the LM head),
 * peak GPU memory,
 * training throughput (tokens/s),
 
 and fit a least-squares slope of `log(metric)` against `log(seq_len)`. The
 slope `b` is the **empirical scaling exponent**: `b ≈ 1` for linear, `b ≈ 2`
 for quadratic attention.
+
+**Why the body-only measurement matters.** The LM head produces a
+`[B, T, vocab]` tensor whose cost is `O(N)` for *every* model. Including it
+in the measurement adds a linear term that dilutes the measured exponent of a
+quadratic model towards 1 — which would *flatter* the attention baselines.
+Measuring the body alone (the sequence-mixing stack, with no LM head) gives
+the exponent the O(N) claim is actually about. Both numbers are reported.
 
 We also measure **generation throughput versus context length**, which
 separates the asymptotic claim from the practical one (see §5).
@@ -217,6 +225,25 @@ separates the asymptotic claim from the practical one (see §5).
 | `results` list is never appended to, so the script writes an **empty JSON** | Results are recorded and saved | The upstream script produced no machine-readable output. |
 | Long sequence lengths measured with a **numerically broken** model | Numerically stable EMA (see §5) | Upstream HSKM returns NaN at ≥1024 tokens, so the long-context rows were meaningless. |
 | Single GPU, single model at a time | Same dtype for all models, OOM recorded rather than crashing | Fairness and completeness of the sweep. |
+
+**Training precision.** The controlled training uses fp16 autocast with a
+`GradScaler` (as the upstream `train.py` also does), which is ~2.6× faster on
+a T4: HSKM reaches 16.5k tok/s and the GPT-2 control 15.0k tok/s. The stable
+EMA forces float32 internally, because under autocast the preceding `Linear`
+emits float16 and the factor `decay ** -C` (4.9e11) overflows float16's
+65504 range — silently producing inf/NaN. A test asserts that mixed
+precision and full precision agree.
+
+### 3.4 Model and configuration details
+
+`benchmarks/scripts/05_dump_configs.py` writes
+[`results/configs/model_configs.md`](results/configs/model_configs.md) — a
+table of the resolved hyperparameters of every model in the registry
+(architecture family, hidden size, depth, heads, FFN width, vocabulary,
+context window, normalisation and positional scheme), plus the exact
+configuration and training budget of the two from-scratch checkpoints. This
+lets a reader confirm that the comparison is between the models claimed
+without re-running anything.
 
 ---
 
