@@ -1,0 +1,46 @@
+{
+  "gpt2/wikitext103": {
+    "key": "gpt2",
+    "corpus": "wikitext103",
+    "context": 512,
+    "token_ppl": 32.34899838361387,
+    "word_ppl": 49.81791580621728,
+    "nll": 117251.240234375,
+    "n_tokens": 33726,
+    "n_words": 30000,
+    "elapsed_s": 3.1370604038238525
+  },
+  "opt-125m/wikitext103": {
+    "key": "opt-125m",
+    "corpus": "wikitext103",
+    "context": 512,
+    "token_ppl": 32.10144091686261,
+    "word_ppl": 49.38952768103587,
+    "nll": 116992.15234375,
+    "n_tokens": 33726,
+    "n_words": 30000,
+    "elapsed_s": 2.188910484313965
+  },
+  "pythia-160m/wikitext103": {
+    "key": "pythia-160m",
+    "corpus": "wikitext103",
+    "context": 512,
+    "token_ppl": 33.615914314850855,
+    "word_ppl": 58.63353862923123,
+    "nll": 122139.20593261719,
+    "n_tokens": 34748,
+    "n_words": 30000,
+    "elapsed_s": 2.3428361415863037
+  },
+  "smollm2-135m/wikitext103": {
+    "key": "smollm2-135m",
+    "corpus": "wikitext103",
+    "context": 512,
+    "token_ppl": 18.291231062787485,
+    "word_ppl": 38.99555861489432,
+    "nll": 109903.43273925781,
+    "n_tokens": 37814,
+    "n_words": 30000,
+    "elapsed_s": 7.51608419418335
+  }
+}

@@ -74,7 +74,7 @@ python3 benchmarks/scripts/20_run_lm_eval.py --models "${EVAL_MODELS},hskm-ours,
 # ------------------------------------------------------------ 4. perplexity
 echo ""
 echo ">>> [4/7] Perplexity"
-python3 benchmarks/scripts/30_perplexity.py --models all --context 512
+python3 benchmarks/scripts/30_perplexity.py --models all --context 512 --max-words 500000
 
 # -------------------------------------------------------------- 5. scaling
 echo ""

@@ -8,13 +8,23 @@ Two metrics are reported for every model:
   directly comparable between models that share a tokenizer (GPT-2 BPE:
   ``gpt2``, ``opt-*``, and HSKM).
 * **Word-level perplexity** -- ``exp(total_nll / n_words)`` where ``n_words``
-  is the number of whitespace-separated words in the raw corpus. This is
+  is the number of whitespace-separated words in the evaluated text. This is
   **tokenizer independent**, so it is the metric to use when comparing HSKM
   against models with different vocabularies (Pythia, SmolLM2, Qwen, Mamba).
 
-The corpus is scored with non-overlapping windows of ``--context`` tokens.
-By default every model is evaluated at the *same* context length so the
-comparison isolates the model rather than its context window; pass
+Evaluation span
+---------------
+The corpus is truncated to a fixed number of **words** (``--max-words``),
+and every model is then tokenised *from that same text prefix*. This matters:
+
+* Every model is scored on exactly the same text, so the word-level
+  denominator is identical across models -- a per-model token count would
+  make the comparison tokenizer-dependent and therefore meaningless.
+* The cost is bounded: scoring the full 4.8M-token TinyStories validation
+  split with a dozen models would take hours.
+
+The window is ``--context`` tokens (default 512) for every model, so the
+comparison isolates the model rather than its context window. Pass
 ``--native-context`` to use each model's own maximum instead.
 
 Examples
@@ -41,38 +51,59 @@ _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "benchmarks", "src"))
 
-from data import get_gpt2_encoder, tokenize_corpus  # noqa: E402
 from model_registry import BY_KEY, REGISTRY, Baseline, load_model  # noqa: E402
 
 RESULTS_DIR = os.path.join(_ROOT, "benchmarks", "results", "perplexity")
 
 CORPORA = {
-    "wikitext103": ("wikitext103", "validation"),
-    "wikitext2": ("wikitext2", "validation"),
-    "tinystories": ("tinystories", "validation"),
+    "wikitext103": ("Salesforce/wikitext", "wikitext-103-raw-v1"),
+    "wikitext2": ("Salesforce/wikitext", "wikitext-2-raw-v1"),
+    "tinystories": ("roneneldan/TinyStories", None),
 }
 
+_TEXT_CACHE: dict = {}
 
-def count_words(dataset: str, split: str) -> int:
-    """Number of whitespace-separated words in the raw corpus."""
+
+def corpus_text(corpus: str, split: str = "validation") -> str:
+    """Raw text of a corpus split (cached in-process)."""
+    key = (corpus, split)
+    if key in _TEXT_CACHE:
+        return _TEXT_CACHE[key]
     from datasets import load_dataset
 
-    if dataset == "wikitext103":
-        ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split=split)
-    elif dataset == "wikitext2":
-        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split=split)
+    repo, cfg = CORPORA[corpus]
+    if cfg is None:
+        ds = load_dataset(repo, split=split)
     else:
-        ds = load_dataset("roneneldan/TinyStories", split=split)
+        ds = load_dataset(repo, cfg, split=split)
     text = "\n\n".join(t for t in ds["text"] if t.strip())
+    _TEXT_CACHE[key] = text
+    return text
+
+
+def truncate_words(text: str, max_words: int) -> str:
+    """First ``max_words`` whitespace-separated words of ``text``."""
+    if max_words <= 0:
+        return text
+    parts = text.split()
+    if len(parts) <= max_words:
+        return text
+    return " ".join(parts[:max_words])
+
+
+def count_words(text: str) -> int:
     return len(text.split())
 
 
 @torch.inference_mode()
-def nll_for_ids(model, ids, context: int, kind: str, device, batch_size: int = 4):
+def nll_for_ids(model, ids, context: int, kind: str, device):
     """
-    Sum of negative log-likelihood over ``ids[1:]`` given ``ids[:-1]``.
+    Sum of negative log-likelihood over the token stream.
 
-    The corpus is cut into non-overlapping windows of ``context`` tokens.
+    The token stream is cut into non-overlapping windows of ``context``
+    tokens; the first token of each window is scored against the previous
+    window's last token so that no token is left unscored except the very
+    first.
     """
     total_nll = 0.0
     total_tokens = 0
@@ -96,17 +127,8 @@ def nll_for_ids(model, ids, context: int, kind: str, device, batch_size: int = 4
     return total_nll, total_tokens
 
 
-def evaluate(baseline: Baseline, args, device, corpus_name: str):
-    dataset, split = CORPORA[corpus_name]
-    ids = tokenize_corpus(corpus_name, split, dataset=dataset)
-    ids = ids.astype(np.int64)
-
-    context = args.context
-    if context is None:
-        context = baseline.max_length
-
-    model = None
-    kind = "hf"
+def build_model(baseline: Baseline, args, device):
+    """Instantiate the model and return ``(model, kind, context)``."""
     if baseline.loader == "ours_hskm":
         from hskm_lm import load_hskm_checkpoint
         from hskm_stable import patch_hskm_stable
@@ -117,88 +139,63 @@ def evaluate(baseline: Baseline, args, device, corpus_name: str):
         model = load_hskm_checkpoint(ckpt)
         patch_hskm_stable(model)
         model = model.to(device).eval()
-        kind = "hskm"
-        context = min(context, model.config.max_seq_len)
-    elif baseline.loader == "ours_gpt2":
-        from model_registry import _ours_gpt2_dir, load_model
+        return model, "hskm", min(args.context or 512, model.config.max_seq_len)
+
+    if baseline.loader == "ours_gpt2":
+        from model_registry import _ours_gpt2_dir
 
         src = args.checkpoints_gpt2 or _ours_gpt2_dir(_ROOT)
         model = load_model(baseline, device=device, dtype=torch.float32, checkpoint=src)
-        context = min(context, model.config.n_positions)
-    elif baseline.loader in ("legacy_mamba", "legacy_mamba2"):
+        return model, "hf", min(args.context or 512, model.config.n_positions)
+
+    if baseline.loader in ("legacy_mamba", "legacy_mamba2"):
         model = load_model(baseline, device=device, dtype=torch.float16)
-    else:
-        from transformers import AutoModelForCausalLM
+        return model, "hf", args.context or baseline.max_length
 
-        dtype = {"float16": torch.float16, "float32": torch.float32}[baseline.dtype]
-        model = AutoModelForCausalLM.from_pretrained(baseline.hf_id, torch_dtype=dtype)
-        model = model.to(device).eval()
+    from transformers import AutoModelForCausalLM
 
-    # Tokenizer: HSKM and the GPT-2-family models share tiktoken gpt2.
-    # For every other model we must use the model's own tokenizer, otherwise
-    # the token-level numbers are meaningless.
-    if kind == "hskm" or baseline.key in ("gpt2", "opt-125m", "opt-350m", "gpt2-ours"):
-        text_ids = ids  # already tokenised with GPT-2 BPE above
-    else:
-        raise RuntimeError(
-            f"{baseline.key}: perplexity for non-GPT-2 tokenizers is handled by "
-            f"evaluate_native_tokenizer()"
-        )
-
-    t0 = time.time()
-    nll, ntok = nll_for_ids(model, text_ids, context, kind, device)
-    elapsed = time.time() - t0
-
-    del model
-    torch.cuda.empty_cache()
-    return nll, ntok, context, elapsed
-
-
-@torch.inference_mode()
-def evaluate_native_tokenizer(baseline, args, device, corpus_name):
-    """Perplexity for models whose tokenizer is not GPT-2 BPE."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    dataset, split = CORPORA[corpus_name]
-    tok_id = baseline.tokenizer_id or baseline.hf_id
-    tok = AutoTokenizer.from_pretrained(tok_id)
     dtype = {"float16": torch.float16, "float32": torch.float32}[baseline.dtype]
     model = AutoModelForCausalLM.from_pretrained(baseline.hf_id, torch_dtype=dtype)
     model = model.to(device).eval()
-
-    context = args.context or baseline.max_length
-
-    # Re-tokenise the raw corpus with this model's own tokenizer.
-    from datasets import load_dataset
-
-    if dataset == "wikitext103":
-        ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split=split)
-    elif dataset == "wikitext2":
-        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split=split)
-    else:
-        ds = load_dataset("roneneldan/TinyStories", split=split)
-    text = "\n\n".join(t for t in ds["text"] if t.strip())
-
-    enc = tok(text, return_tensors="pt").input_ids[0].to(device)
-    total_nll, total_tokens = 0.0, 0
-    n_win = (enc.numel() - 1) // context
-    t0 = time.time()
-    for w in range(n_win):
-        chunk = enc[w * context : (w + 1) * context]
-        x = chunk[:-1].unsqueeze(0)
-        y = chunk[1:]
-        logits = model(input_ids=x).logits
-        lp = F.log_softmax(logits[0].float(), dim=-1)
-        total_nll += -lp.gather(-1, y.unsqueeze(-1)).sum().item()
-        total_tokens += y.numel()
-    elapsed = time.time() - t0
-
-    del model
-    torch.cuda.empty_cache()
-    return total_nll, total_tokens, context, elapsed
+    return model, "hf", args.context or baseline.max_length
 
 
-GPT2_TOKENIZER_MODELS = {"gpt2", "opt-125m", "opt-350m", "hskm-ours"}
+def token_ids_for(baseline: Baseline, text: str, kind: str):
+    """
+    Tokenise ``text`` with the model's own tokenizer and its own convention.
+
+    The special-token convention matters enormously for perplexity:
+
+    * **OPT** was trained with ``</s>`` prepended to every sequence. Scoring
+      it without a BOS token puts the model far out of distribution and
+      inflates the perplexity by orders of magnitude (GPT-2 PPL 32 vs OPT
+      PPL 8498 on the same text when BOS is omitted). OPT therefore uses its
+      own tokenizer, which prepends BOS.
+    * **GPT-2** uses no BOS token, and its tokenizer is used directly.
+    * **HSKM** was trained by the upstream ``dataset.py`` with
+      ``add_bos=True``, so the BOS token is prepended here too.
+    * Every other model uses its own tokenizer with its own convention
+      (Llama-style models prepend BOS, GPT-NeoX/Mamba and Qwen do not).
+    """
+    if kind == "hskm":
+        import tiktoken
+
+        enc = tiktoken.get_encoding("gpt2")
+        # BOS id used by the upstream tokenizer.py (max_token_value + 2).
+        return [50258] + enc.encode_ordinary(text), None
+
+    if baseline.key in ("gpt2", "gpt2-ours"):
+        import tiktoken
+
+        enc = tiktoken.get_encoding("gpt2")
+        return enc.encode_ordinary(text), None
+
+    from transformers import AutoTokenizer
+
+    tok_id = baseline.tokenizer_id or baseline.hf_id
+    tok = AutoTokenizer.from_pretrained(tok_id)
+    ids = tok(text, return_tensors="pt").input_ids[0]
+    return ids, tok
 
 
 def main():
@@ -206,7 +203,10 @@ def main():
     ap.add_argument("--models", default="all")
     ap.add_argument("--corpora", default="wikitext103,tinystories")
     ap.add_argument("--context", type=int, default=512,
-                    help="context window used for every model (None = native)")
+                    help="context window used for every model")
+    ap.add_argument("--max-words", type=int, default=500_000,
+                    help="evaluate the first N words of each corpus (same text "
+                         "for every model)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--checkpoints", default=None,
                     help="path to the HSKM checkpoint (ours tier)")
@@ -214,10 +214,11 @@ def main():
                     help="path to the controlled GPT-2 checkpoint directory")
     args = ap.parse_args()
 
-    if args.models == "all":
-        selected = list(REGISTRY)
-    else:
-        selected = [BY_KEY[k.strip()] for k in args.models.split(",") if k.strip()]
+    selected = (
+        list(REGISTRY)
+        if args.models == "all"
+        else [BY_KEY[k.strip()] for k in args.models.split(",") if k.strip()]
+    )
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     out_path = os.path.join(RESULTS_DIR, "perplexity.json")
@@ -226,29 +227,39 @@ def main():
         all_results = json.load(open(out_path))
 
     for corpus in args.corpora.split(","):
-        n_words = count_words(CORPORA[corpus][0], CORPORA[corpus][1])
-        print(f"\n=== {corpus} ({n_words:,} words) ===", flush=True)
+        text = corpus_text(corpus)
+        text = truncate_words(text, args.max_words)
+        n_words = count_words(text)
+        print(f"\n=== {corpus} ({n_words:,} words evaluated) ===", flush=True)
+
         for b in selected:
             key = f"{b.key}/{corpus}"
             try:
-                if b.key in GPT2_TOKENIZER_MODELS:
-                    nll, ntok, ctx, el = evaluate(b, args, args.device, corpus)
-                else:
-                    nll, ntok, ctx, el = evaluate_native_tokenizer(b, args, args.device, corpus)
+                model, kind, context = build_model(b, args, args.device)
+                ids, _tok = token_ids_for(b, text, kind)
+                t0 = time.time()
+                nll, ntok = nll_for_ids(model, ids, context, kind, args.device)
+                elapsed = time.time() - t0
+                del model
+                torch.cuda.empty_cache()
             except Exception as e:  # noqa: BLE001
                 print(f"  {b.key:16s} FAILED: {type(e).__name__}: {e}")
+                torch.cuda.empty_cache()
                 continue
 
             tok_ppl = math.exp(nll / ntok)
             word_ppl = math.exp(nll / n_words)
             all_results[key] = {
-                "key": b.key, "corpus": corpus, "context": ctx,
+                "key": b.key, "corpus": corpus, "context": context,
                 "token_ppl": tok_ppl, "word_ppl": word_ppl,
                 "nll": nll, "n_tokens": ntok, "n_words": n_words,
-                "elapsed_s": el,
+                "elapsed_s": elapsed,
             }
-            print(f"  {b.key:16s} ctx={ctx:<5d} tok_ppl={tok_ppl:9.3f}  word_ppl={word_ppl:9.3f}  ({el:.0f}s)",
-                  flush=True)
+            print(
+                f"  {b.key:16s} ctx={context:<5d} tok_ppl={tok_ppl:9.3f}  "
+                f"word_ppl={word_ppl:9.3f}  ({elapsed:.0f}s)",
+                flush=True,
+            )
             with open(out_path, "w") as f:
                 json.dump(all_results, f, indent=2)
 
