@@ -78,9 +78,16 @@ def test_upstream_ema_overflows():
     )
 
 
-@pytest.mark.parametrize("seq_len", [64, 256, 512, 768])
+@pytest.mark.parametrize("seq_len", [64, 100, 256, 300, 512, 768])
 def test_stable_ema_matches(seq_len):
-    """The stable EMA reproduces the upstream EMA wherever upstream is finite."""
+    """
+    The stable EMA reproduces the upstream EMA wherever upstream is finite.
+
+    The lengths deliberately include values that are *not* multiples of the
+    chunk size (100, 300) -- the segmented scan has to round the sequence
+    length up to a chunk boundary, and an earlier version of this code padded
+    by the wrong amount and failed on exactly those lengths.
+    """
     torch.manual_seed(0)
     cfg = _cfg(d_model=256, n_layers=2, max_seq_len=4096)
     upstream = HSKM(cfg).eval()
@@ -96,6 +103,51 @@ def test_stable_ema_matches(seq_len):
     diff = (a - b).abs().max().item()
     scale = a.abs().max().item()
     assert diff / scale < 1e-4, f"stable EMA diverges from upstream at T={seq_len}: {diff}"
+
+
+@pytest.mark.parametrize("seq_len", [1, 17, 100, 256, 300, 512, 1000, 2048])
+def test_stable_ema_matches_float64_reference(seq_len):
+    """
+    Ground-truth test of the segmented scan.
+
+    Rather than comparing against the upstream implementation (which itself
+    overflows past ~800 tokens), we compare against the EMA recurrence
+    evaluated sequentially in float64. This validates the segmented scan
+    directly, at any sequence length, and is the check that matters for
+    lengths upstream cannot reach.
+    """
+    from model import MediumTermMemory
+
+    from hskm_stable import StableMediumTermMemory
+
+    torch.manual_seed(0)
+    cfg = _cfg(d_model=64, d_medium=16)
+    ref_mod = MediumTermMemory(cfg).eval()
+
+    stable_mod = StableMediumTermMemory(cfg, chunk_size=256)
+    stable_mod.load_state_dict(ref_mod.state_dict())
+    stable_mod.eval()
+
+    x = torch.randn(2, seq_len, cfg.d_model)
+    with torch.no_grad():
+        h = ref_mod.in_proj(x)
+
+        # Sequential float64 reference for  h_t = d*h_{t-1} + (1-d)*x_t
+        d = cfg.mtm_decay
+        h64 = h.double()
+        acc = torch.zeros_like(h64[:, 0])
+        ref = torch.empty_like(h64)
+        for t in range(seq_len):
+            acc = d * acc + (1 - d) * h64[:, t]
+            ref[:, t] = acc
+
+        out_ref = ref_mod.out_proj(ref.float())
+        out_stable = stable_mod(x)
+
+    assert torch.isfinite(out_stable).all(), f"stable EMA not finite at T={seq_len}"
+    err = (out_stable - out_ref).abs().max().item()
+    scale = max(out_ref.abs().max().item(), 1e-6)
+    assert err / scale < 1e-4, f"stable EMA differs from float64 reference at T={seq_len}: {err}"
 
 
 @pytest.mark.parametrize("seq_len", [1024, 2048, 4096])

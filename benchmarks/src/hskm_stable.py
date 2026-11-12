@@ -102,16 +102,22 @@ class StableMediumTermMemory(MediumTermMemory):
         n_full = T // C
         tail = T - n_full * C
 
-        # Pad the tail with zeros so the sequence splits evenly. Zero padding
-        # contributes nothing to the EMA, but it *does* advance the decay
-        # clock, so we correct for it below.
+        # Pad the tail so that the sequence length becomes an exact multiple
+        # of C. The amount of padding is ``C - tail`` (not ``tail``): we need
+        # to round the length *up* to the next chunk boundary.
+        #
+        # Zero padding contributes nothing to the EMA. It does advance the
+        # decay clock for the padded chunk, but that chunk's output is
+        # discarded, so no correction is needed.
         if tail > 0:
-            h = torch.cat([h, h.new_zeros(B, tail, h.shape[-1])], dim=1)
+            pad_len = C - tail
+            h = torch.cat([h, h.new_zeros(B, pad_len, h.shape[-1])], dim=1)
             T_pad = h.shape[1]
         else:
             T_pad = T
 
         n_chunks = T_pad // C
+        assert n_chunks * C == T_pad, "chunking does not tile the sequence"
         chunks = h.view(B, n_chunks, C, h.shape[-1])  # [B, n_chunks, C, D_m]
 
         # 1) Local EMA inside every chunk (bounded exponents).
@@ -151,14 +157,7 @@ class StableMediumTermMemory(MediumTermMemory):
         out = out_chunks.reshape(B, T_pad, h.shape[-1])
 
         if tail > 0:
-            # The padded steps advanced the decay clock by `tail` steps, so
-            # the carried state into the next chunk was scaled by decay**tail
-            # too often. Roll the correction back for the chunks after the
-            # last real chunk: the state entering chunk j (j >= n_full) must
-            # be scaled by decay ** -(tail * (number of padded chunks after j)).
-            # Because the padding is always the *last* chunk, only the final
-            # chunk is affected, and its output is discarded -- so no
-            # correction is needed for the real output.
+            # Drop the zero-padded tail: it contributed nothing to the EMA.
             out = out[:, :T, :]
 
         return self.out_proj(out.to(out_dtype))

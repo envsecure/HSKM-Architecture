@@ -30,5 +30,37 @@
       "acc": 0.0,
       "acc_norm": 0.15
     }
+  },
+  "hskm-ours": {
+    "lambada_openai": {
+      "acc": 0.0,
+      "perplexity": 69537.87693183281
+    },
+    "piqa": {
+      "acc": 0.5,
+      "acc_norm": 0.5
+    },
+    "hellaswag": {
+      "acc": 0.2,
+      "acc_norm": 0.25
+    },
+    "arc_easy": {
+      "acc": 0.4,
+      "acc_norm": 0.3
+    },
+    "arc_challenge": {
+      "acc": 0.3,
+      "acc_norm": 0.3
+    },
+    "winogrande": {
+      "acc": 0.55
+    },
+    "boolq": {
+      "acc": 0.35
+    },
+    "openbookqa": {
+      "acc": 0.3,
+      "acc_norm": 0.45
+    }
   }
 }
