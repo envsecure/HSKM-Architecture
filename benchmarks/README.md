@@ -159,8 +159,27 @@ perplexities exist. TinyStories is HSKM's *native* training distribution
 * **Token-level PPL** = `exp(total_nll / total_tokens)`. Directly comparable
   only between models sharing a tokenizer (GPT-2, OPT and HSKM).
 * **Word-level PPL** = `exp(total_nll / n_words)` where `n_words` is the
-  whitespace-word count of the raw corpus, identical for every model. This is
-  **tokenizer-independent** and is therefore the primary cross-model metric.
+  whitespace-word count of the evaluated text. This is **tokenizer
+  independent** and is therefore the primary cross-model metric.
+
+**The evaluation span.** The corpus is truncated to a fixed number of
+**words** (`--max-words`, default 500k) and every model tokenises *that same
+text prefix*. This matters for two reasons:
+
+* All models are scored on identical text, so the word-level denominator is
+  identical across tokenizers. Using a per-model token count for the
+  numerator but a shared corpus word count for the denominator would make
+  the comparison tokenizer-dependent and therefore meaningless.
+* It bounds the cost. The full TinyStories validation split is 4.8M tokens;
+  scoring that with a dozen models (including a 2.8B one) would take hours.
+
+**Special-token conventions matter.** Each model is tokenised with its own
+tokenizer and its own convention. OPT was trained with `</s>` prepended to
+every sequence — scoring it without a BOS token puts it far out of
+distribution and inflates its perplexity by orders of magnitude (OPT-125M
+measured 8498 token-PPL on WikiText-103 without BOS, against 32.1 with it).
+GPT-2 uses no BOS; HSKM prepends the BOS token its upstream training used
+(`add_bos=True` in `dataset.py`).
 
 **Controls:** every model is scored with non-overlapping windows of the same
 length (`--context`, default 512) so the comparison isolates the model rather
