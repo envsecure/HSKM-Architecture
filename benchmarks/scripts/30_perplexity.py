@@ -119,6 +119,12 @@ def evaluate(baseline: Baseline, args, device, corpus_name: str):
         model = model.to(device).eval()
         kind = "hskm"
         context = min(context, model.config.max_seq_len)
+    elif baseline.loader == "ours_gpt2":
+        from model_registry import _ours_gpt2_dir, load_model
+
+        src = args.checkpoints_gpt2 or _ours_gpt2_dir(_ROOT)
+        model = load_model(baseline, device=device, dtype=torch.float32, checkpoint=src)
+        context = min(context, model.config.n_positions)
     elif baseline.loader in ("legacy_mamba", "legacy_mamba2"):
         model = load_model(baseline, device=device, dtype=torch.float16)
     else:
@@ -202,7 +208,10 @@ def main():
     ap.add_argument("--context", type=int, default=512,
                     help="context window used for every model (None = native)")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--checkpoints", default=None)
+    ap.add_argument("--checkpoints", default=None,
+                    help="path to the HSKM checkpoint (ours tier)")
+    ap.add_argument("--checkpoints-gpt2", default=None,
+                    help="path to the controlled GPT-2 checkpoint directory")
     args = ap.parse_args()
 
     if args.models == "all":

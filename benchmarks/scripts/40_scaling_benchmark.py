@@ -138,6 +138,57 @@ def build_for_scaling(key: str, args, device, dtype):
 # Measurement
 # --------------------------------------------------------------------------
 
+def body_forward(model, kind, input_ids):
+    """
+    Run only the sequence-mixing body, excluding the LM head.
+
+    The LM head produces a ``[B, T, vocab]`` tensor whose cost is ``O(N)``
+    for *every* model. Including it dilutes the measured exponent of a
+    quadratic model towards 1 and would flatter the attention baselines.
+    Measuring the body alone isolates the architecture that the O(N) claim is
+    actually about; the full-step numbers are reported alongside it.
+    """
+    if kind == "hskm":
+        x = model.token_emb(input_ids)
+        x = model.dropout(x)
+        freqs = model.freqs_cis.to(x.device)
+        for block in model.blocks:
+            x = block(x, freqs)
+        return model.ln_f(x)
+    return model.base_model(input_ids).last_hidden_state
+
+
+def measure_body_forward(model, kind, seq_len, batch_size, device, vocab,
+                          warmup=2, steps=5):
+    """Time a forward pass through the body only (no LM head, no backward)."""
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+
+    x = torch.randint(0, vocab, (batch_size, seq_len), device=device, dtype=torch.long)
+
+    try:
+        with torch.inference_mode():
+            for _ in range(warmup):
+                body_forward(model, kind, x)
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            for _ in range(steps):
+                body_forward(model, kind, x)
+            torch.cuda.synchronize()
+            elapsed = (time.perf_counter() - t0) / steps
+        peak_mb = torch.cuda.max_memory_allocated() / 1024**2
+    except torch.cuda.OutOfMemoryError:
+        return {"seq_len": seq_len, "oom": True}
+    tokens = batch_size * seq_len
+    return {
+        "seq_len": seq_len,
+        "ms_per_step": elapsed * 1000,
+        "tok_per_s": tokens / elapsed,
+        "peak_mem_mb": peak_mb,
+        "oom": False,
+    }
+
+
 def measure_train_step(model, kind, seq_len, batch_size, device, vocab, dtype,
                        warmup=2, steps=5):
     """Time a forward+backward step and record peak memory."""
@@ -272,6 +323,7 @@ def main():
         print(f"  params {n_params/1e6:.1f}M   dtype {args.dtype}   batch {args.batch_size}")
 
         rows = []
+        body_rows = []
         for L in args.seq_lens:
             try:
                 r = measure_train_step(
@@ -279,21 +331,35 @@ def main():
                 )
                 r["oom"] = False
                 print(
-                    f"  L={L:6d}  {r['ms_per_step']:9.1f} ms  {r['tok_per_s']:11,.0f} tok/s  "
+                    f"  L={L:6d}  step {r['ms_per_step']:9.1f} ms  {r['tok_per_s']:11,.0f} tok/s  "
                     f"{r['peak_mem_mb']:9.1f} MB"
                 )
             except torch.cuda.OutOfMemoryError:
                 r = {"seq_len": L, "oom": True}
-                print(f"  L={L:6d}  OOM")
+                print(f"  L={L:6d}  step OOM")
                 torch.cuda.empty_cache()
             rows.append(r)
+
+            b = measure_body_forward(
+                model, kind, L, args.batch_size, device, vocab, steps=args.steps
+            )
+            if not b.get("oom"):
+                print(
+                    f"           body {b['ms_per_step']:9.1f} ms  {b['tok_per_s']:11,.0f} tok/s  "
+                    f"{b['peak_mem_mb']:9.1f} MB"
+                )
+            body_rows.append(b)
+            torch.cuda.empty_cache()
+
             results.setdefault(key, {})["train"] = rows
+            results[key]["body"] = body_rows
             with open(out_path, "w") as f:
                 json.dump(results, f, indent=2)
 
         ok = [r for r in rows if not r.get("oom")]
+        bok = [r for r in body_rows if not r.get("oom")]
+        results.setdefault(key, {})["params_m"] = n_params
         if len(ok) >= 2:
-            results.setdefault(key, {})["params_m"] = n_params
             results[key]["time_exponent"] = fit_exponent(
                 [r["seq_len"] for r in ok], [r["ms_per_step"] for r in ok]
             )
@@ -301,11 +367,19 @@ def main():
                 [r["seq_len"] for r in ok], [r["peak_mem_mb"] for r in ok]
             )
             print(
-                f"  -> fitted time exponent b = {results[key]['time_exponent']:.2f} "
+                f"  -> fitted full-step time exponent b = {results[key]['time_exponent']:.2f} "
                 f"(1 = linear, 2 = quadratic)"
             )
+        if len(bok) >= 2:
+            results[key]["body_time_exponent"] = fit_exponent(
+                [r["seq_len"] for r in bok], [r["ms_per_step"] for r in bok]
+            )
+            results[key]["body_mem_exponent"] = fit_exponent(
+                [r["seq_len"] for r in bok], [r["peak_mem_mb"] for r in bok]
+            )
             print(
-                f"  -> fitted memory exponent b = {results[key]['mem_exponent']:.2f}"
+                f"  -> fitted body-forward time exponent b = "
+                f"{results[key]['body_time_exponent']:.2f}"
             )
 
         if not args.skip_generation:

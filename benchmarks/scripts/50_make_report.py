@@ -161,13 +161,16 @@ def ppl_table(ppl):
 def scaling_table(sc):
     if not sc:
         return None
-    headers = ["Model", "Params (M)", "Time exponent b", "Memory exponent b", "Verdict"]
+    headers = [
+        "Model", "Params (M)", "Body time exponent b", "Body mem exponent b",
+        "Full-step time exponent b", "Verdict",
+    ]
     rows = []
     for key in ORDER:
         e = sc.get(key)
         if not e:
             continue
-        b = e.get("time_exponent")
+        b = e.get("body_time_exponent", e.get("time_exponent"))
         verdict = "n/a"
         if b is not None and b == b:
             if b < 1.35:
@@ -178,16 +181,51 @@ def scaling_table(sc):
                 verdict = "quadratic"
         rows.append([
             f"`{key}`", fmt(e.get("params_m"), 1), fmt(b, 2),
-            fmt(e.get("mem_exponent"), 2), verdict,
+            fmt(e.get("body_mem_exponent"), 2),
+            fmt(e.get("time_exponent"), 2), verdict,
         ])
     out = ["### Scaling exponents", ""]
     out.append(md_table(headers, rows))
     out.append("")
     out.append(
         "`b` is the least-squares slope of `log(metric)` against `log(seq_len)`. "
-        "A quadratic attention model gives `b ~ 2`; a linear model gives `b ~ 1`."
+        "A quadratic attention model gives `b ~ 2`; a linear model gives `b ~ 1`. "
+        "The **body** columns exclude the LM head, whose `O(N)` cost is identical "
+        "for every model and would otherwise dilute the measured exponent of the "
+        "attention baselines towards 1."
     )
     return "\n".join(out)
+
+
+def load_training_summaries():
+    """
+    Merge the controlled-training summaries.
+
+    The two models may be trained in separate processes (e.g. on separate
+    GPUs), which writes separate ``controlled_*.json`` files. They are merged
+    here into one dict keyed by the registry key.
+    """
+    d = os.path.join(RES, "training")
+    if not os.path.isdir(d):
+        return {}
+    merged = {}
+    for fn in sorted(os.listdir(d)):
+        if not fn.startswith("controlled") or not fn.endswith(".json"):
+            continue
+        try:
+            part = json.load(open(os.path.join(d, fn)))
+        except Exception:  # noqa: BLE001
+            continue
+        for k, v in part.items():
+            merged[k] = v
+    # Map onto the registry keys used elsewhere.
+    if "hskm" in merged:
+        merged["hskm-ours"] = merged.pop("hskm")
+    if "gpt2-matched-params" in merged:
+        merged["gpt2-ours"] = merged.pop("gpt2-matched-params")
+    if "gpt2-matched-depth" in merged:
+        merged["gpt2-ours-depth"] = merged.pop("gpt2-matched-depth")
+    return merged
 
 
 def controlled_table(ctrl):
@@ -195,7 +233,7 @@ def controlled_table(ctrl):
         return None
     headers = ["Model", "Params (M)", "Tokens seen", "Val loss", "Val PPL"]
     rows = []
-    for key in ORDER:
+    for key in ["hskm-ours", "gpt2-ours", "gpt2-ours-depth"]:
         e = ctrl.get(key)
         if not e:
             continue
@@ -203,12 +241,16 @@ def controlled_table(ctrl):
             f"`{key}`", fmt(e["params"] / 1e6, 1), f"{e['tokens_seen']:,}",
             fmt(e["val_loss"], 4), fmt(e["val_ppl"], 2),
         ])
+    if not rows:
+        return None
     out = ["### Controlled from-scratch comparison", ""]
     out.append(md_table(headers, rows))
     out.append("")
     out.append(
         "Identical corpus, token budget, optimiser and schedule; the only "
-        "difference is the architecture."
+        "difference is the architecture. `gpt2-ours` is matched to HSKM on "
+        "**parameter count**; `gpt2-ours-depth` (if present) is matched on "
+        "**depth** instead."
     )
     return "\n".join(out)
 
@@ -255,9 +297,27 @@ def fig_task_bars(lm):
 def fig_scaling(sc):
     if not sc:
         return
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4.6))
 
+    # --- body forward time (isolates the sequence-mixing architecture) ---
     ax = axes[0]
+    for key, e in sc.items():
+        rows = [r for r in e.get("body", []) if not r.get("oom")]
+        if len(rows) < 2:
+            continue
+        xs = [r["seq_len"] for r in rows]
+        ys = [r["ms_per_step"] for r in rows]
+        ax.plot(xs, ys, "o-", label=f"{key} (b={e.get('body_time_exponent', float('nan')):.2f})",
+                color=color_of(key))
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xlabel("sequence length")
+    ax.set_ylabel("ms / forward (body only)")
+    ax.set_title("Body forward time (no LM head)")
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(fontsize=7)
+
+    ax = axes[1]
     for key, e in sc.items():
         rows = [r for r in e.get("train", []) if not r.get("oom")]
         if len(rows) < 2:
@@ -270,27 +330,27 @@ def fig_scaling(sc):
     ax.set_yscale("log")
     ax.set_xlabel("sequence length")
     ax.set_ylabel("ms / step (fwd+bwd)")
-    ax.set_title("Training step time")
+    ax.set_title("Full training step")
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=7)
 
-    ax = axes[1]
+    ax = axes[2]
     for key, e in sc.items():
-        rows = [r for r in e.get("train", []) if not r.get("oom")]
+        rows = [r for r in e.get("body", []) if not r.get("oom")]
         if len(rows) < 2:
             continue
         ax.plot([r["seq_len"] for r in rows], [r["peak_mem_mb"] for r in rows], "o-",
-                label=f"{key} (b={e.get('mem_exponent', float('nan')):.2f})",
+                label=f"{key} (b={e.get('body_mem_exponent', float('nan')):.2f})",
                 color=color_of(key))
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     ax.set_xlabel("sequence length")
     ax.set_ylabel("peak VRAM (MB)")
-    ax.set_title("Peak memory")
+    ax.set_title("Peak memory (body only)")
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=7)
 
-    ax = axes[2]
+    ax = axes[3]
     for key, e in sc.items():
         rows = [r for r in e.get("generation", []) if not r.get("oom")]
         if len(rows) < 2:
@@ -344,7 +404,7 @@ def main():
     lm = load("lm_eval/_summary.json")
     ppl = load("perplexity/perplexity.json")
     sc = load("scaling/scaling.json")
-    ctrl = load("training/controlled_training_summary.json")
+    ctrl = load_training_summaries()
 
     sections = []
     for title, builder in [

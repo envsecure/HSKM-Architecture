@@ -80,13 +80,24 @@ class StableMediumTermMemory(MediumTermMemory):
     def forward(self, x: Tensor) -> Tensor:
         B, T, _ = x.shape
         h = self.in_proj(x)  # [B, T, D_m]
+
+        # The scan is always evaluated in float32.
+        #
+        # Under ``torch.autocast`` the preceding ``nn.Linear`` produces a
+        # float16 tensor, and the factor ``decay ** -C`` (4.9e11 for
+        # ``decay = 0.9``, ``C = 256``) overflows float16 (max 65504) --
+        # silently producing inf/NaN. Forcing float32 here keeps the
+        # computation exact under mixed precision.
+        out_dtype = h.dtype
+        h = h.float()
+
         decay = self.decay
         C = self.chunk_size
 
         if T <= C:
             # Single chunk: identical to the upstream formulation, but the
             # exponent is bounded by T <= C so it cannot overflow.
-            return self.out_proj(self._chunk_local_ema(h))
+            return self.out_proj(self._chunk_local_ema(h).to(out_dtype))
 
         n_full = T // C
         tail = T - n_full * C
@@ -150,7 +161,7 @@ class StableMediumTermMemory(MediumTermMemory):
             # correction is needed for the real output.
             out = out[:, :T, :]
 
-        return self.out_proj(out)
+        return self.out_proj(out.to(out_dtype))
 
     def _chunk_local_ema(self, h: Tensor) -> Tensor:
         """EMA within each chunk; exponents bounded by the chunk length."""

@@ -69,10 +69,26 @@ python train.py --epochs 20 --batch_size 8 --seq_len 1024 --d_model 1024 --n_lay
 ```
 
 ### 🧪 Benchmarking
-Prove the linear scaling advantage on your own hardware:
+
+> **Full benchmark suite:** [`benchmarks/README.md`](benchmarks/README.md) —
+> HSKM benchmarked against Mamba / Mamba-2, GPT-2, OPT, Pythia, SmolLM2 and
+> Qwen2.5 on perplexity, the standard lm-evaluation-harness task panel, and a
+> scaling study that fits the empirical O(N) exponent. Reproduce with
+> `bash benchmarks/run_all.sh`.
+
+The original micro-benchmark is still available:
 ```bash
 python benchmark.py --seq_len 4096
 ```
+
+> ⚠️ **Note on the original `benchmark.py`:** its baseline is
+> `nn.TransformerEncoderLayer`, which is a *bidirectional encoder* layer
+> rather than a causal decoder, so it is not a like-for-like comparison. It
+> also writes an empty results file (`results` is never appended to), and
+> it cannot measure long contexts because upstream HSKM overflows float32 at
+> ≥1024 tokens (see [Finding 1](benchmarks/README.md#51-upstream-hskm-is-numerically-unstable-at-1024-tokens)).
+> The `benchmarks/` suite replaces it with a properly causal baseline,
+> records real results, and uses a numerically stable EMA.
 
 ---
 
@@ -84,6 +100,10 @@ python benchmark.py --seq_len 4096
 | **Memory usage at 8k context** | ~24GB VRAM | **~6GB VRAM** |
 | **Throughput (Tokens/sec)** | Declines with context | **Constant** |
 | **Positional Encoding** | Absolute / ALiBi | **Integrated RoPE** |
+
+These are the project's design targets. The measured values, including the
+empirical scaling exponents fitted from real runs, are in
+[`benchmarks/results/REPORT.md`](benchmarks/results/REPORT.md).
 
 ---
 

@@ -84,6 +84,25 @@ def build_lm(baseline: Baseline, args, device):
             stable=not args.unstable_hskm,
         )
 
+    if baseline.loader == "ours_gpt2":
+        # Our controlled GPT-2 baseline, saved in HF format by the training
+        # script. It shares the GPT-2 tokenizer.
+        from transformers import AutoTokenizer
+
+        from model_registry import _ours_gpt2_dir
+
+        src = args.checkpoints_gpt2 or _ours_gpt2_dir(_ROOT)
+        model = load_model(baseline, device=device, dtype=dtype, checkpoint=src)
+        tok = AutoTokenizer.from_pretrained(src)
+        return HFLM(
+            pretrained=model,
+            tokenizer=tok,
+            batch_size=args.batch_size,
+            device=device,
+            max_length=baseline.max_length,
+            backend="causal",
+        )
+
     from lm_eval.models.huggingface import HFLM
 
     dtype = {
@@ -203,7 +222,10 @@ def main():
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--checkpoints", default=None)
+    ap.add_argument("--checkpoints", default=None,
+                    help="path to the HSKM checkpoint (ours tier)")
+    ap.add_argument("--checkpoints-gpt2", default=None,
+                    help="path to the controlled GPT-2 checkpoint directory")
     ap.add_argument("--unstable-hskm", action="store_true",
                     help="use the upstream (numerically unstable) EMA for HSKM")
     args = ap.parse_args()
@@ -221,15 +243,23 @@ def main():
             selected.append(BY_KEY[k])
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Merge into any existing summary so that models evaluated in separate
+    # invocations (e.g. the from-scratch checkpoints on a second GPU)
+    # accumulate rather than overwrite each other.
+    summary_path = os.path.join(RESULTS_DIR, "_summary.json")
     summary = {}
+    if os.path.exists(summary_path):
+        with open(summary_path) as f:
+            summary = json.load(f)
+
     for b in selected:
         rec = run_one(b, args, args.device)
         if rec:
             summary[b.key] = rec["metrics"]
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
 
-    with open(os.path.join(RESULTS_DIR, "_summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
-    print(f"\nwrote {RESULTS_DIR}/_summary.json")
+    print(f"\nwrote {summary_path}")
 
 
 if __name__ == "__main__":

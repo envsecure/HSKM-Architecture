@@ -137,11 +137,13 @@ def build_gpt2(args, vocab: int, n_layer: int):
     return model, cfg
 
 
-def forward_loss(model, x, y, kind):
+def forward_loss(model, x, y, kind, amp=False):
     if kind == "hskm":
-        loss, _ = model(x, labels=y)
+        with torch.amp.autocast("cuda", enabled=amp, dtype=torch.float16):
+            loss, _ = model(x, labels=y)
         return loss
-    out = model(input_ids=x, labels=y)
+    with torch.amp.autocast("cuda", enabled=amp, dtype=torch.float16):
+        out = model(input_ids=x, labels=y)
     return out.loss
 
 
@@ -183,6 +185,8 @@ def train_one(kind, args, train_x, train_y, val_x, val_y, vocab, out_dir, n_laye
     )
 
     model.train()
+    amp = args.amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
     step = 0
     t0 = time.time()
     tokens_seen = 0
@@ -197,10 +201,12 @@ def train_one(kind, args, train_x, train_y, val_x, val_y, vocab, out_dir, n_laye
                 break
             xb, yb = xb.to(device), yb.to(device)
             opt.zero_grad(set_to_none=True)
-            loss = forward_loss(model, xb, yb, kind)
-            loss.backward()
+            loss = forward_loss(model, xb, yb, kind, amp=amp)
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
+            scaler.step(opt)
+            scaler.update()
             sched.step()
 
             tokens_seen += xb.numel()
@@ -225,7 +231,7 @@ def train_one(kind, args, train_x, train_y, val_x, val_y, vocab, out_dir, n_laye
         n_val = min(200, val_x.shape[0] // args.batch_size)
         for xb, yb in iter_batches(val_x, val_y, args.batch_size, device=str(device),
                                    shuffle=False):
-            val_losses.append(forward_loss(model, xb, yb, kind).item())
+            val_losses.append(forward_loss(model, xb, yb, kind, amp=False).item())
             if len(val_losses) >= n_val:
                 break
     val_loss = float(np.mean(val_losses))
@@ -246,12 +252,27 @@ def train_one(kind, args, train_x, train_y, val_x, val_y, vocab, out_dir, n_laye
         "val_ppl": math.exp(min(val_loss, 20)),
         "train_loss_last100": float(np.mean(history[-100:])),
         "corpus": args.dataset,
+        "amp": bool(amp),
         "wallclock_s": time.time() - t0,
     }
     ckpt_path = os.path.join(out_dir, f"{kind}.pt")
     torch.save(payload, ckpt_path)
     with open(os.path.join(out_dir, f"{kind}_train_log.json"), "w") as f:
         json.dump(log, f, indent=2)
+
+    # Additionally save the GPT-2 control in the standard Hugging Face format
+    # so it can be loaded with `from_pretrained` by the evaluation scripts.
+    if kind == "gpt2":
+        hf_dir = os.path.join(out_dir, "hskm-ours-gpt2-ctrl")
+        model.save_pretrained(hf_dir)
+        try:
+            from transformers import AutoTokenizer
+
+            AutoTokenizer.from_pretrained("openai-community/gpt2").save_pretrained(hf_dir)
+        except Exception as e:  # noqa: BLE001
+            print(f"  !! could not save tokenizer: {type(e).__name__}: {e}")
+        print(f"  saved HF-format control to {hf_dir}")
+
     return payload
 
 
@@ -274,9 +295,17 @@ def main():
     ap.add_argument("--top-k", type=int, default=16)
     ap.add_argument("--n-patterns", type=int, default=4096)
     ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--amp", action="store_true", default=True,
+                    help="mixed precision (fp16 + GradScaler); ~2.6x faster on T4")
+    ap.add_argument("--no-amp", dest="amp", action="store_false")
     ap.add_argument("--also-matched-depth", action="store_true",
                     help="also train a GPT-2 with the same depth as HSKM")
+    ap.add_argument("--ctrl-n-layer", type=int, default=0,
+                    help="explicit depth for the GPT-2 control (0 = auto-match)")
     ap.add_argument("--out-dir", default=OUT_ROOT)
+    ap.add_argument("--summary-name", default="controlled_training_summary.json",
+                    help="filename under benchmarks/results/training/ (use distinct "
+                         "names when training the two models on separate GPUs)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -300,33 +329,40 @@ def main():
     os.makedirs(LOG_ROOT, exist_ok=True)
     summary = {}
 
-    if args.model in ("hskm", "both"):
-        hcfg = HSKMConfig(
-            vocab_size=vocab, d_model=args.d_model, n_layers=args.n_layers,
-            n_heads=args.n_heads, d_medium=args.d_medium, n_kernels=args.n_kernels,
-            top_k=args.top_k, n_patterns=args.n_patterns, max_seq_len=args.seq_len,
-            dropout=args.dropout,
-        )
-        h_params = hskm_param_count(hcfg)
-        matched_layer, matched_params = find_matched_gpt2(
-            h_params, vocab, args.d_model, args.n_heads
-        )
-        print(f"[match] HSKM {h_params/1e6:.1f}M -> GPT-2 needs n_layer={matched_layer} "
-              f"({matched_params/1e6:.1f}M, {100*abs(matched_params-h_params)/h_params:.1f}% off)")
+    # The GPT-2 control is matched to HSKM on parameter count. HSKM's
+    # long-term pattern bank carries a large parameter block that a
+    # transformer of the same depth does not have, so we match capacity
+    # rather than depth.
+    hcfg = HSKMConfig(
+        vocab_size=vocab, d_model=args.d_model, n_layers=args.n_layers,
+        n_heads=args.n_heads, d_medium=args.d_medium, n_kernels=args.n_kernels,
+        top_k=args.top_k, n_patterns=args.n_patterns, max_seq_len=args.seq_len,
+        dropout=args.dropout,
+    )
+    h_params = hskm_param_count(hcfg)
+    matched_layer, matched_params = find_matched_gpt2(
+        h_params, vocab, args.d_model, args.n_heads
+    )
+    if args.ctrl_n_layer:
+        matched_layer = args.ctrl_n_layer
+        matched_params = gpt2_param_count(args.d_model, matched_layer, args.n_heads, vocab)
+    print(f"[match] HSKM {h_params/1e6:.1f}M -> GPT-2 control n_layer={matched_layer} "
+          f"({matched_params/1e6:.1f}M, {100*abs(matched_params-h_params)/h_params:.1f}% off)")
 
-        out_dir = os.path.join(args.out_dir, "matched_params")
+    out_dir = os.path.join(args.out_dir, "matched_params")
+
+    if args.model in ("hskm", "both"):
         p = train_one("hskm", args, train_x, train_y, val_x, val_y, vocab, out_dir)
         summary["hskm"] = {k: p[k] for k in
                            ("params", "steps", "tokens_seen", "val_loss", "val_ppl")}
 
-        if args.model == "both":
-            out_dir = os.path.join(args.out_dir, "matched_params")
-            p = train_one("gpt2", args, train_x, train_y, val_x, val_y, vocab,
-                          out_dir, n_layer=matched_layer)
-            summary["gpt2-matched-params"] = {
-                k: p[k] for k in ("params", "steps", "tokens_seen", "val_loss", "val_ppl")
-            }
-            summary["gpt2-matched-params"]["n_layer"] = matched_layer
+    if args.model in ("gpt2", "both"):
+        p = train_one("gpt2", args, train_x, train_y, val_x, val_y, vocab,
+                      out_dir, n_layer=matched_layer)
+        summary["gpt2-matched-params"] = {
+            k: p[k] for k in ("params", "steps", "tokens_seen", "val_loss", "val_ppl")
+        }
+        summary["gpt2-matched-params"]["n_layer"] = matched_layer
 
     if args.also_matched_depth:
         out_dir = os.path.join(args.out_dir, "matched_depth")
@@ -337,7 +373,7 @@ def main():
         }
         summary["gpt2-matched-depth"]["n_layer"] = args.n_layers
 
-    with open(os.path.join(LOG_ROOT, "controlled_training_summary.json"), "w") as f:
+    with open(os.path.join(LOG_ROOT, args.summary_name), "w") as f:
         json.dump(summary, f, indent=2)
     print("\n" + json.dumps(summary, indent=2))
 

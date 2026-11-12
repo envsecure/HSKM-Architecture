@@ -111,6 +111,49 @@ def test_stable_ema_is_finite(seq_len):
     assert torch.isfinite(logits).all()
 
 
+def test_stable_ema_survives_autocast():
+    """
+    Under ``torch.autocast`` the preceding ``nn.Linear`` emits float16, and
+    the factor ``decay ** -C`` overflows float16. The stable EMA must force
+    float32 internally, otherwise mixed-precision training silently produces
+    inf/NaN.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA for autocast")
+    torch.manual_seed(0)
+    cfg = _cfg(d_model=256, n_layers=2, max_seq_len=1024)
+    m = HSKM(cfg).eval().cuda()
+    patch_hskm_stable(m, chunk_size=256)
+    x = torch.randint(0, 500, (1, 768), device="cuda")
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
+        _, logits = m(x)
+    assert torch.isfinite(logits).all(), "autocast produced non-finite logits"
+
+
+def test_amp_and_fp32_agree():
+    """Mixed precision and full precision must give the same loss."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA for autocast")
+    torch.manual_seed(0)
+    cfg = _cfg(d_model=256, n_layers=2, max_seq_len=512)
+    x = torch.randint(0, 500, (8, 512), device="cuda")
+
+    m32 = HSKM(cfg).eval().cuda()
+    patch_hskm_stable(m32, chunk_size=256)
+    with torch.no_grad():
+        _, l32 = m32(x)
+
+    m16 = HSKM(cfg).eval().cuda()
+    patch_hskm_stable(m16, chunk_size=256)
+    m16.load_state_dict(m32.state_dict())  # identical weights
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
+        _, l16 = m16(x)
+
+    assert torch.isfinite(l16).all()
+    rel = (l32 - l16).abs().max().item() / l32.abs().max().item()
+    assert rel < 5e-2, f"AMP and fp32 disagree: rel={rel}"
+
+
 def test_hskm_adapter_matches_gpt2():
     """
     Our custom lm-eval adapter must produce exactly the same loglikelihood

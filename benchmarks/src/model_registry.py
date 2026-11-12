@@ -352,6 +352,12 @@ def _build_legacy_mamba(model_id: str, family: str):
     return model
 
 
+def _ours_gpt2_dir(root: str) -> str:
+    """Path to the HF-format directory of our controlled GPT-2 baseline."""
+    return os.path.join(root, "benchmarks", "checkpoints", "matched_params",
+                        "hskm-ours-gpt2-ctrl")
+
+
 def load_model(baseline: Baseline, device="cuda", dtype=torch.float16, checkpoint=None):
     """
     Instantiate a model for a :class:`Baseline`.
@@ -370,7 +376,9 @@ def load_model(baseline: Baseline, device="cuda", dtype=torch.float16, checkpoin
     elif baseline.loader == "ours_gpt2":
         from transformers import GPT2LMHeadModel
 
-        model = GPT2LMHeadModel.from_pretrained(checkpoint, torch_dtype=dtype)
+        src = checkpoint or _ours_gpt2_dir(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        model = GPT2LMHeadModel.from_pretrained(src, torch_dtype=dtype)
     else:
         from transformers import AutoModelForCausalLM
 

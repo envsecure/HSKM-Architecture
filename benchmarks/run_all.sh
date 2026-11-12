@@ -50,6 +50,16 @@ python3 benchmarks/scripts/01_download_models.py
 # ------------------------------------------------------------- 2. training
 echo ""
 echo ">>> [2/6] Controlled from-scratch training (HSKM vs GPT-2)"
+# The two models can be trained concurrently on separate GPUs. They are
+# independent runs with an identical budget, so this is safe and roughly
+# halves the wall-clock time:
+#
+#   CUDA_VISIBLE_DEVICES=0 python3 benchmarks/scripts/10_train_controlled.py \
+#       --model hskm --tokens ${TOKENS} --summary-name controlled_hskm.json &
+#   CUDA_VISIBLE_DEVICES=1 python3 benchmarks/scripts/10_train_controlled.py \
+#       --model gpt2 --tokens ${TOKENS} --summary-name controlled_gpt2.json &
+#   wait
+#
 python3 benchmarks/scripts/10_train_controlled.py --model both --tokens "${TOKENS}"
 
 # ------------------------------------------------------------ 3. lm-eval

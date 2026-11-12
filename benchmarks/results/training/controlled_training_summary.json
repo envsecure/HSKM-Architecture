@@ -1,0 +1,17 @@
+{
+  "hskm": {
+    "params": 71138320,
+    "steps": 244,
+    "tokens_seen": 1998848,
+    "val_loss": 6.020008850097656,
+    "val_ppl": 411.5822382535494
+  },
+  "gpt2-matched-params": {
+    "params": 70129152,
+    "steps": 244,
+    "tokens_seen": 1998848,
+    "val_loss": 7.038566525777181,
+    "val_ppl": 1139.7526290457,
+    "n_layer": 14
+  }
+}
