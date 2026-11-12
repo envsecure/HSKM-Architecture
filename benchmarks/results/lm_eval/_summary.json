@@ -1,0 +1,34 @@
+{
+  "gpt2": {
+    "lambada_openai": {
+      "acc": 0.4,
+      "perplexity": 43.82053482177047
+    },
+    "piqa": {
+      "acc": 0.6,
+      "acc_norm": 0.7
+    },
+    "hellaswag": {
+      "acc": 0.3,
+      "acc_norm": 0.3
+    },
+    "arc_easy": {
+      "acc": 0.45,
+      "acc_norm": 0.2
+    },
+    "arc_challenge": {
+      "acc": 0.15,
+      "acc_norm": 0.15
+    },
+    "winogrande": {
+      "acc": 0.5
+    },
+    "boolq": {
+      "acc": 0.55
+    },
+    "openbookqa": {
+      "acc": 0.0,
+      "acc_norm": 0.15
+    }
+  }
+}

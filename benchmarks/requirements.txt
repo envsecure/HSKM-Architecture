@@ -1,0 +1,21 @@
+# Benchmark suite dependencies.
+#
+# The upstream project only needs torch / tiktoken / datasets / matplotlib.
+# The benchmark suite additionally requires the lm-evaluation-harness and a
+# few analysis helpers.
+
+torch>=2.1
+transformers>=4.40
+tiktoken>=0.7
+datasets>=2.18
+accelerate>=0.30
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+tqdm>=4.66
+
+# Standard evaluation harness
+lm_eval>=0.4.3
+
+# Testing
+pytest>=8.0

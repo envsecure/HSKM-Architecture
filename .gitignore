@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Large regenerable artifacts (tokenised corpora, model checkpoints).
+# Everything under benchmarks/results/ IS tracked: the results are the
+# deliverable and must be visible to anyone cloning the repository.
+benchmarks/.cache/
+benchmarks/checkpoints/
+*.npy
+*.pt
