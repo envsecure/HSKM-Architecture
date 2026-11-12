@@ -52,6 +52,34 @@ COLORS = {
 }
 
 
+def load_lm_eval_summary():
+    """
+    Rebuild the lm-eval summary from the per-model result files.
+
+    Reading the individual ``<key>.json`` files is more robust than relying
+    on ``_summary.json``: a summary can be stale or partial if an evaluation
+    run was interrupted, whereas each per-model file is written as soon as
+    that model finishes. Models whose record carries a ``limit`` (a partial
+    run) are excluded so that truncated numbers never reach the report.
+    """
+    d = os.path.join(RES, "lm_eval")
+    if not os.path.isdir(d):
+        return {}
+    summary = {}
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith(".json") or fn.startswith("_"):
+            continue
+        try:
+            rec = json.load(open(os.path.join(d, fn)))
+        except Exception:  # noqa: BLE001
+            continue
+        if rec.get("limit"):
+            print(f"  ! skipping {rec.get('key')}: partial run (limit={rec['limit']})")
+            continue
+        summary[rec["key"]] = rec.get("metrics", {})
+    return summary
+
+
 def load(path, default=None):
     p = os.path.join(RES, path)
     if not os.path.exists(p):
@@ -401,7 +429,7 @@ def main():
     os.makedirs(FIGS, exist_ok=True)
     os.makedirs(TABLES, exist_ok=True)
 
-    lm = load("lm_eval/_summary.json")
+    lm = load_lm_eval_summary()
     ppl = load("perplexity/perplexity.json")
     sc = load("scaling/scaling.json")
     ctrl = load_training_summaries()
